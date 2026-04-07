@@ -1,0 +1,4 @@
+ARG MLFLOW_VERSION=latest
+FROM ghcr.io/mlflow/mlflow:${MLFLOW_VERSION}
+
+RUN pip install --no-cache-dir 'mlflow[auth]'

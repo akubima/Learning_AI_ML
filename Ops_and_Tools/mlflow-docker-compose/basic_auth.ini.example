@@ -1,0 +1,5 @@
+[mlflow]
+default_permission = READ
+database_uri = postgresql://mlflow:mlflow@postgres:5432/mlflow
+admin_username = mlflow
+admin_password = mlflow12345678
