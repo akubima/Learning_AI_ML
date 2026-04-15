@@ -99,7 +99,7 @@ services:
       MLFLOW_PORT: ${MLFLOW_PORT}
 
 #      # Added only if using basic auth
-#      MLFLOW_FLASK_SERVER_SECRET_KEY: "fIbvn4g+6Pyqv9sASvujFurc21b8Pwo/kDjOw2UQV0w="
+#      MLFLOW_FLASK_SERVER_SECRET_KEY: "nB4t5RzV9sFv8jLwP0YqA2DmXc7kH3N6oE4iG1tL8uQ9vZ6mJ4bW2nR0eT8yXy="
 #      MLFLOW_AUTH_CONFIG_PATH: /mlflow-auth/basic_auth.ini
     volumes:
       - ./basic_auth.ini:/mlflow-auth/basic_auth.ini:ro
@@ -113,7 +113,10 @@ services:
           --artifacts-destination "${MLFLOW_ARTIFACTS_DESTINATION}" \
           --serve-artifacts \
           --host "${MLFLOW_HOST}" \
-          --port "${MLFLOW_PORT}"
+          --port "${MLFLOW_PORT}" \
+          --allowed-hosts "fqdn.com" \
+          --cors-allowed-origins "https://fqdn.com" \
+          --app-name basic-auth
     ports:
       - "${MLFLOW_PORT}:${MLFLOW_PORT}"
     healthcheck:
