@@ -29,6 +29,7 @@ build/
 .env.*
 *.ini
 !*.ini.example
+!.env.example
 
 # OS files
 .DS_Store
