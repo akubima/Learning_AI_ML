@@ -19,6 +19,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   storage:
     image: rustfs/rustfs:1.0.0-alpha.83
@@ -70,10 +71,10 @@ services:
     restart: "no"
 
   mlflow:
-    image: ghcr.io/mlflow/mlflow:${MLFLOW_VERSION}
-#    build:
-#      context: .
-#      dockerfile: DockerfileMLflow
+#    image: ghcr.io/mlflow/mlflow:${MLFLOW_VERSION}
+    build:
+      context: .
+      dockerfile: DockerfileMLflow
     container_name: mlflow-server
     depends_on:
       postgres:
@@ -99,8 +100,8 @@ services:
       MLFLOW_PORT: ${MLFLOW_PORT}
 
 #      # Added only if using basic auth
-#      MLFLOW_FLASK_SERVER_SECRET_KEY: "fIbvn4g+6Pyqv9sASvujFurc21b8Pwo/kDjOw2UQV0w="
-#      MLFLOW_AUTH_CONFIG_PATH: /mlflow-auth/basic_auth.ini
+      MLFLOW_FLASK_SERVER_SECRET_KEY: ""
+      MLFLOW_AUTH_CONFIG_PATH: /mlflow-auth/basic_auth.ini
     volumes:
       - ./basic_auth.ini:/mlflow-auth/basic_auth.ini:ro
     command:
@@ -113,7 +114,10 @@ services:
           --artifacts-destination "${MLFLOW_ARTIFACTS_DESTINATION}" \
           --serve-artifacts \
           --host "${MLFLOW_HOST}" \
-          --port "${MLFLOW_PORT}"
+          --port "${MLFLOW_PORT}" \
+          --allowed-hosts "awoawoawok-mlflow-res-ai.bima.dev" \
+          --cors-allowed-origins "https://awoawoawok-mlflow-res-ai.bima.dev" \
+          --app-name basic-auth \
     ports:
       - "${MLFLOW_PORT}:${MLFLOW_PORT}"
     healthcheck:
@@ -127,6 +131,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
+    restart: unless-stopped
 
 networks:
   default:
