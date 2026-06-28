@@ -191,7 +191,7 @@ services:
       - |
         set -e
 
-        apk add --no-cache postgresql15-client rclone tar zip
+        apk add --no-cache postgresql15-client rclone tar
 
         while true; do
           TS="$$(date +%Y%m%d-%H%M%S)"
@@ -202,8 +202,8 @@ services:
 
           DATABASE_WORKDIR="/backup-tmp/database-$${TS}"
           DATABASE_DUMP="$${DATABASE_WORKDIR}/mlflow-database-$${TS}.sql"
-          DATABASE_ARCHIVE="/backup-tmp/mlflow-database-$${TS}.zip"
-          DATABASE_DEST="r2:${R2_BUCKET}/database/mlflow-database-$${TS}.zip"
+          DATABASE_ARCHIVE="/backup-tmp/mlflow-database-$${TS}.tar.gz"
+          DATABASE_DEST="r2:${R2_BUCKET}/database/mlflow-database-$${TS}.tar.gz"
 
           echo "[backup] started at $$(date -Iseconds)"
 
@@ -255,8 +255,8 @@ services:
             --no-privileges \
             --file="$${DATABASE_DUMP}"
 
-          echo "[backup] creating database zip archive"
-          zip -j "$${DATABASE_ARCHIVE}" "$${DATABASE_DUMP}"
+          echo "[backup] creating database archive"
+          tar -czf "$${DATABASE_ARCHIVE}" -C "$${DATABASE_WORKDIR}" .
 
           echo "[backup] uploading database archive to R2"
           rclone copyto "$${DATABASE_ARCHIVE}" "$${DATABASE_DEST}" \
