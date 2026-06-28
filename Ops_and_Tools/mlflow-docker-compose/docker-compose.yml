@@ -230,6 +230,91 @@ services:
     mem_limit: 256m
     restart: unless-stopped
 
+  database-backup:
+    image: alpine:3.20
+    container_name: database-backup
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGHOST: postgres
+      PGPORT: 5432
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+
+      # Destination: Cloudflare R2
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+      RCLONE_CONFIG_R2_ENDPOINT: ${R2_ENDPOINT}
+      RCLONE_CONFIG_R2_REGION: auto
+      RCLONE_CONFIG_R2_ACL: private
+
+      R2_BUCKET: ${R2_BUCKET}
+
+    volumes:
+      - backup-tmp:/backup-tmp
+
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+
+        apk add --no-cache postgresql15-client rclone zip
+
+        while true; do
+          TS="$$(date +%Y%m%d-%H%M%S)"
+          WORKDIR="/backup-tmp/database-$${TS}"
+          DUMP_FILE="$${WORKDIR}/mlflow-database-$${TS}.sql"
+          ARCHIVE="/backup-tmp/mlflow-database-$${TS}.zip"
+          DEST="r2:${R2_BUCKET}/database/mlflow-database-$${TS}.zip"
+
+          echo "[database-backup] started at $$(date -Iseconds)"
+          echo "[database-backup] workdir: $${WORKDIR}"
+          echo "[database-backup] dump: $${DUMP_FILE}"
+          echo "[database-backup] archive: $${ARCHIVE}"
+          echo "[database-backup] destination: $${DEST}"
+
+          rm -rf "$${WORKDIR}" "$${ARCHIVE}"
+          mkdir -p "$${WORKDIR}"
+
+          pg_dump \
+            --host="$${PGHOST}" \
+            --port="$${PGPORT}" \
+            --username="$${POSTGRES_USER}" \
+            --dbname="$${POSTGRES_DB}" \
+            --format=plain \
+            --no-owner \
+            --no-privileges \
+            --file="$${DUMP_FILE}"
+
+          echo "[database-backup] creating zip archive"
+          zip -j "$${ARCHIVE}" "$${DUMP_FILE}"
+
+          echo "[database-backup] uploading archive to R2"
+          rclone copyto "$${ARCHIVE}" "$${DEST}" \
+            --s3-no-check-bucket \
+            --transfers 1 \
+            --retries 3 \
+            --low-level-retries 5 \
+            --stats 60s \
+            --log-level INFO
+
+          echo "[database-backup] cleaning local temp"
+          rm -rf "$${WORKDIR}" "$${ARCHIVE}"
+
+          echo "[database-backup] finished at $$(date -Iseconds)"
+          echo "[database-backup] sleeping 24 hours"
+
+          sleep 86400
+        done
+    mem_limit: 256m
+    restart: unless-stopped
+
 networks:
   default:
     name: mlflow-network
