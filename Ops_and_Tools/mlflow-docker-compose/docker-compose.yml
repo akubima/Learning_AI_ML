@@ -230,6 +230,7 @@ services:
           echo "[backup] uploading artifact archive to R2"
           rclone copyto "$${ARTIFACT_ARCHIVE}" "$${ARTIFACT_DEST}" \
             --s3-no-check-bucket \
+            --header-upload "Content-Type: application/gzip" \
             --transfers 1 \
             --retries 3 \
             --low-level-retries 5 \
@@ -261,6 +262,7 @@ services:
           echo "[backup] uploading database archive to R2"
           rclone copyto "$${DATABASE_ARCHIVE}" "$${DATABASE_DEST}" \
             --s3-no-check-bucket \
+            --header-upload "Content-Type: application/gzip" \
             --transfers 1 \
             --retries 3 \
             --low-level-retries 5 \
