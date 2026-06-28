@@ -142,15 +142,25 @@ services:
 
     restart: "unless-stopped"
 
-  rustfs-backup:
-    image: rclone/rclone:latest
-    container_name: rustfs-backup
+  backup:
+    image: alpine:3.20
+    container_name: mlflow-backup
     depends_on:
+      postgres:
+        condition: service_healthy
       storage:
         condition: service_healthy
       create-bucket:
         condition: service_completed_successfully
     environment:
+      # Source: PostgreSQL
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGHOST: postgres
+      PGPORT: 5432
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+
       # Source: RustFS
       RCLONE_CONFIG_RUSTFS_TYPE: s3
       RCLONE_CONFIG_RUSTFS_PROVIDER: Other
@@ -181,22 +191,31 @@ services:
       - |
         set -e
 
+        apk add --no-cache postgresql15-client rclone tar zip
+
         while true; do
           TS="$$(date +%Y%m%d-%H%M%S)"
-          WORKDIR="/backup-tmp/work-$${TS}"
-          ARCHIVE="/backup-tmp/mlflow-artifacts-$${TS}.tar.gz"
-          DEST="r2:${R2_BUCKET}/mlflow/mlflow-artifacts-$${TS}.tar.gz"
+
+          ARTIFACT_WORKDIR="/backup-tmp/mlflow-artifacts-$${TS}"
+          ARTIFACT_ARCHIVE="/backup-tmp/mlflow-artifacts-$${TS}.tar.gz"
+          ARTIFACT_DEST="r2:${R2_BUCKET}/mlflow/mlflow-artifacts-$${TS}.tar.gz"
+
+          DATABASE_WORKDIR="/backup-tmp/database-$${TS}"
+          DATABASE_DUMP="$${DATABASE_WORKDIR}/mlflow-database-$${TS}.sql"
+          DATABASE_ARCHIVE="/backup-tmp/mlflow-database-$${TS}.zip"
+          DATABASE_DEST="r2:${R2_BUCKET}/database/mlflow-database-$${TS}.zip"
 
           echo "[backup] started at $$(date -Iseconds)"
-          echo "[backup] copying RustFS bucket '${S3_BUCKET}' to local temp"
-          echo "[backup] workdir: $${WORKDIR}"
-          echo "[backup] archive: $${ARCHIVE}"
-          echo "[backup] destination: $${DEST}"
 
-          rm -rf "$${WORKDIR}" "$${ARCHIVE}"
-          mkdir -p "$${WORKDIR}"
+          echo "[backup] copying RustFS bucket '$${S3_BUCKET}' to local temp"
+          echo "[backup] artifact workdir: $${ARTIFACT_WORKDIR}"
+          echo "[backup] artifact archive: $${ARTIFACT_ARCHIVE}"
+          echo "[backup] artifact destination: $${ARTIFACT_DEST}"
 
-          rclone copy "rustfs:${S3_BUCKET}" "$${WORKDIR}" \
+          rm -rf "$${ARTIFACT_WORKDIR}" "$${ARTIFACT_ARCHIVE}"
+          mkdir -p "$${ARTIFACT_WORKDIR}"
+
+          rclone copy "rustfs:$${S3_BUCKET}" "$${ARTIFACT_WORKDIR}" \
             --s3-no-check-bucket \
             --transfers 1 \
             --checkers 1 \
@@ -205,13 +224,11 @@ services:
             --stats 60s \
             --log-level INFO
 
-          echo "[backup] creating archive"
+          echo "[backup] creating artifact archive"
+          tar -czf "$${ARTIFACT_ARCHIVE}" -C "$${ARTIFACT_WORKDIR}" .
 
-          tar -czf "$${ARCHIVE}" -C "$${WORKDIR}" .
-
-          echo "[backup] uploading archive to R2"
-
-          rclone copyto "$${ARCHIVE}" "$${DEST}" \
+          echo "[backup] uploading artifact archive to R2"
+          rclone copyto "$${ARTIFACT_ARCHIVE}" "$${ARTIFACT_DEST}" \
             --s3-no-check-bucket \
             --transfers 1 \
             --retries 3 \
@@ -219,68 +236,14 @@ services:
             --stats 60s \
             --log-level INFO
 
-          echo "[backup] cleaning local temp"
-          rm -rf "$${WORKDIR}" "$${ARCHIVE}"
+          echo "[backup] dumping PostgreSQL database"
+          echo "[backup] database workdir: $${DATABASE_WORKDIR}"
+          echo "[backup] database dump: $${DATABASE_DUMP}"
+          echo "[backup] database archive: $${DATABASE_ARCHIVE}"
+          echo "[backup] database destination: $${DATABASE_DEST}"
 
-          echo "[backup] finished at $$(date -Iseconds)"
-          echo "[backup] sleeping 24 hours"
-
-          sleep 86400
-        done
-    mem_limit: 256m
-    restart: unless-stopped
-
-  database-backup:
-    image: alpine:3.20
-    container_name: database-backup
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      PGHOST: postgres
-      PGPORT: 5432
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-
-      # Destination: Cloudflare R2
-      RCLONE_CONFIG_R2_TYPE: s3
-      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
-      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
-      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
-      RCLONE_CONFIG_R2_ENDPOINT: ${R2_ENDPOINT}
-      RCLONE_CONFIG_R2_REGION: auto
-      RCLONE_CONFIG_R2_ACL: private
-
-      R2_BUCKET: ${R2_BUCKET}
-
-    volumes:
-      - backup-tmp:/backup-tmp
-
-    entrypoint: /bin/sh
-    command:
-      - -c
-      - |
-        set -e
-
-        apk add --no-cache postgresql15-client rclone zip
-
-        while true; do
-          TS="$$(date +%Y%m%d-%H%M%S)"
-          WORKDIR="/backup-tmp/database-$${TS}"
-          DUMP_FILE="$${WORKDIR}/mlflow-database-$${TS}.sql"
-          ARCHIVE="/backup-tmp/mlflow-database-$${TS}.zip"
-          DEST="r2:${R2_BUCKET}/database/mlflow-database-$${TS}.zip"
-
-          echo "[database-backup] started at $$(date -Iseconds)"
-          echo "[database-backup] workdir: $${WORKDIR}"
-          echo "[database-backup] dump: $${DUMP_FILE}"
-          echo "[database-backup] archive: $${ARCHIVE}"
-          echo "[database-backup] destination: $${DEST}"
-
-          rm -rf "$${WORKDIR}" "$${ARCHIVE}"
-          mkdir -p "$${WORKDIR}"
+          rm -rf "$${DATABASE_WORKDIR}" "$${DATABASE_ARCHIVE}"
+          mkdir -p "$${DATABASE_WORKDIR}"
 
           pg_dump \
             --host="$${PGHOST}" \
@@ -290,13 +253,13 @@ services:
             --format=plain \
             --no-owner \
             --no-privileges \
-            --file="$${DUMP_FILE}"
+            --file="$${DATABASE_DUMP}"
 
-          echo "[database-backup] creating zip archive"
-          zip -j "$${ARCHIVE}" "$${DUMP_FILE}"
+          echo "[backup] creating database zip archive"
+          zip -j "$${DATABASE_ARCHIVE}" "$${DATABASE_DUMP}"
 
-          echo "[database-backup] uploading archive to R2"
-          rclone copyto "$${ARCHIVE}" "$${DEST}" \
+          echo "[backup] uploading database archive to R2"
+          rclone copyto "$${DATABASE_ARCHIVE}" "$${DATABASE_DEST}" \
             --s3-no-check-bucket \
             --transfers 1 \
             --retries 3 \
@@ -304,11 +267,15 @@ services:
             --stats 60s \
             --log-level INFO
 
-          echo "[database-backup] cleaning local temp"
-          rm -rf "$${WORKDIR}" "$${ARCHIVE}"
+          echo "[backup] cleaning local temp"
+          rm -rf \
+            "$${ARTIFACT_WORKDIR}" \
+            "$${ARTIFACT_ARCHIVE}" \
+            "$${DATABASE_WORKDIR}" \
+            "$${DATABASE_ARCHIVE}"
 
-          echo "[database-backup] finished at $$(date -Iseconds)"
-          echo "[database-backup] sleeping 24 hours"
+          echo "[backup] finished at $$(date -Iseconds)"
+          echo "[backup] sleeping 24 hours"
 
           sleep 86400
         done
