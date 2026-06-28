@@ -144,7 +144,7 @@ services:
 
   backup:
     image: alpine:3.20
-    container_name: mlflow-backup
+    container_name: backup
     depends_on:
       postgres:
         condition: service_healthy
