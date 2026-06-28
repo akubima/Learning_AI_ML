@@ -1,6 +1,7 @@
 volumes:
   pgdata:
   storage-data:
+  backup-tmp:
 
 services:
   postgres:
@@ -14,6 +15,7 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    mem_limit: 256m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -36,6 +38,7 @@ services:
       - "9001:9001"
     volumes:
       - storage-data:/data
+    mem_limit: 256m
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", 'curl -s http://127.0.0.1:9000/health | grep -q ''"status":"ok"''']
@@ -68,13 +71,15 @@ services:
       AWS_S3_ADDRESSING_STYLE: path
       MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL}
       S3_BUCKET: ${S3_BUCKET}
+    mem_limit: 256m
     restart: "no"
 
   mlflow:
-#    image: ghcr.io/mlflow/mlflow:${MLFLOW_VERSION}
     build:
       context: .
       dockerfile: DockerfileMLflow
+      args:
+        MLFLOW_VERSION: ${MLFLOW_VERSION:-2.17.2}
     container_name: mlflow-server
     depends_on:
       postgres:
@@ -84,10 +89,8 @@ services:
       create-bucket:
         condition: service_completed_successfully
     environment:
-      # Backend store URI built from vars
       MLFLOW_BACKEND_STORE_URI: ${MLFLOW_BACKEND_STORE_URI}
 
-      # S3/RustFS settings
       MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL}
       MLFLOW_ARTIFACTS_DESTINATION: ${MLFLOW_ARTIFACTS_DESTINATION}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
@@ -95,31 +98,36 @@ services:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
       MLFLOW_S3_IGNORE_TLS: "true"
 
-      # Server host/port
       MLFLOW_HOST: ${MLFLOW_HOST}
       MLFLOW_PORT: ${MLFLOW_PORT}
 
-#      # Added only if using basic auth
-      MLFLOW_FLASK_SERVER_SECRET_KEY: ""
+      MLFLOW_FLASK_SERVER_SECRET_KEY: ${MLFLOW_FLASK_SERVER_SECRET_KEY}
       MLFLOW_AUTH_CONFIG_PATH: /mlflow-auth/basic_auth.ini
+
     volumes:
       - ./basic_auth.ini:/mlflow-auth/basic_auth.ini:ro
+
     command:
       - /bin/bash
       - -c
       - |
-        pip install --no-cache-dir psycopg2-binary boto3
         mlflow server \
           --backend-store-uri "${MLFLOW_BACKEND_STORE_URI}" \
           --artifacts-destination "${MLFLOW_ARTIFACTS_DESTINATION}" \
           --serve-artifacts \
           --host "${MLFLOW_HOST}" \
           --port "${MLFLOW_PORT}" \
+          --workers 1 \
           --allowed-hosts "awoawoawok-mlflow-res-ai.bima.dev" \
           --cors-allowed-origins "https://awoawoawok-mlflow-res-ai.bima.dev" \
-          --app-name basic-auth \
+          --app-name basic-auth
+
     ports:
       - "${MLFLOW_PORT}:${MLFLOW_PORT}"
+
+    mem_limit: 900m
+    memswap_limit: 3g
+
     healthcheck:
       test:
         [
@@ -131,6 +139,95 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
+
+    restart: "unless-stopped"
+
+  rustfs-backup:
+    image: rclone/rclone:latest
+    container_name: rustfs-backup
+    depends_on:
+      storage:
+        condition: service_healthy
+      create-bucket:
+        condition: service_completed_successfully
+    environment:
+      # Source: RustFS
+      RCLONE_CONFIG_RUSTFS_TYPE: s3
+      RCLONE_CONFIG_RUSTFS_PROVIDER: Other
+      RCLONE_CONFIG_RUSTFS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      RCLONE_CONFIG_RUSTFS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      RCLONE_CONFIG_RUSTFS_ENDPOINT: http://storage:9000
+      RCLONE_CONFIG_RUSTFS_REGION: ${AWS_DEFAULT_REGION}
+      RCLONE_CONFIG_RUSTFS_FORCE_PATH_STYLE: "true"
+
+      # Destination: Cloudflare R2
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+      RCLONE_CONFIG_R2_ENDPOINT: ${R2_ENDPOINT}
+      RCLONE_CONFIG_R2_REGION: auto
+      RCLONE_CONFIG_R2_ACL: private
+
+      S3_BUCKET: ${S3_BUCKET}
+      R2_BUCKET: ${R2_BUCKET}
+
+    volumes:
+      - backup-tmp:/backup-tmp
+
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+
+        while true; do
+          TS="$$(date +%Y%m%d-%H%M%S)"
+          WORKDIR="/backup-tmp/work-$${TS}"
+          ARCHIVE="/backup-tmp/mlflow-artifacts-$${TS}.tar.gz"
+          DEST="r2:${R2_BUCKET}/mlflow/mlflow-artifacts-$${TS}.tar.gz"
+
+          echo "[backup] started at $$(date -Iseconds)"
+          echo "[backup] copying RustFS bucket '${S3_BUCKET}' to local temp"
+          echo "[backup] workdir: $${WORKDIR}"
+          echo "[backup] archive: $${ARCHIVE}"
+          echo "[backup] destination: $${DEST}"
+
+          rm -rf "$${WORKDIR}" "$${ARCHIVE}"
+          mkdir -p "$${WORKDIR}"
+
+          rclone copy "rustfs:${S3_BUCKET}" "$${WORKDIR}" \
+            --s3-no-check-bucket \
+            --transfers 1 \
+            --checkers 1 \
+            --retries 3 \
+            --low-level-retries 5 \
+            --stats 60s \
+            --log-level INFO
+
+          echo "[backup] creating archive"
+
+          tar -czf "$${ARCHIVE}" -C "$${WORKDIR}" .
+
+          echo "[backup] uploading archive to R2"
+
+          rclone copyto "$${ARCHIVE}" "$${DEST}" \
+            --s3-no-check-bucket \
+            --transfers 1 \
+            --retries 3 \
+            --low-level-retries 5 \
+            --stats 60s \
+            --log-level INFO
+
+          echo "[backup] cleaning local temp"
+          rm -rf "$${WORKDIR}" "$${ARCHIVE}"
+
+          echo "[backup] finished at $$(date -Iseconds)"
+          echo "[backup] sleeping 24 hours"
+
+          sleep 86400
+        done
+    mem_limit: 256m
     restart: unless-stopped
 
 networks:
