@@ -193,112 +193,64 @@ services:
       - |
         set -e
 
-        apk add --no-cache postgresql15-client rclone tar tzdata
+        apk add --no-cache dcron postgresql15-client rclone tar tzdata
 
-        wait_until_next_backup() {
-          NOW_EPOCH="$$(date +%s)"
-          TODAY_0100_EPOCH="$$(date -d "$$(date +%Y-%m-%d) 01:00:00" +%s)"
+        mkdir -p /opt/mlflow-backup
 
-          if [ "$${NOW_EPOCH}" -lt "$${TODAY_0100_EPOCH}" ]; then
-            NEXT_BACKUP_EPOCH="$${TODAY_0100_EPOCH}"
-          else
-            TOMORROW="$$(date -d "$$(date +%Y-%m-%d) +1 day" +%Y-%m-%d)"
-            NEXT_BACKUP_EPOCH="$$(date -d "$${TOMORROW} 01:00:00" +%s)"
-          fi
+        tee /opt/mlflow-backup/run >/dev/null <<'BACKUP_SCRIPT'
+        #!/bin/sh
+        set -e
 
-          SLEEP_SECONDS=$$((NEXT_BACKUP_EPOCH - NOW_EPOCH))
-          echo "[backup] next backup at $$(date -d "@$${NEXT_BACKUP_EPOCH}" -Iseconds)"
-          echo "[backup] sleeping $${SLEEP_SECONDS} seconds"
-          sleep "$${SLEEP_SECONDS}"
-        }
+        TS="$$(date +%Y%m%d-%H%M%S)"
 
-        while true; do
-          wait_until_next_backup
+        ARTIFACT_WORKDIR="/backup-tmp/mlflow-artifacts-$${TS}"
+        ARTIFACT_ARCHIVE="/backup-tmp/mlflow-artifacts-$${TS}.tar.gz"
+        ARTIFACT_DEST="r2:$${R2_BUCKET}/mlflow/mlflow-artifacts-$${TS}.tar.gz"
 
-          TS="$$(date +%Y%m%d-%H%M%S)"
+        DATABASE_WORKDIR="/backup-tmp/database-$${TS}"
+        DATABASE_DUMP="$${DATABASE_WORKDIR}/mlflow-database-$${TS}.sql"
+        DATABASE_ARCHIVE="/backup-tmp/mlflow-database-$${TS}.tar.gz"
+        DATABASE_DEST="r2:$${R2_BUCKET}/database/mlflow-database-$${TS}.tar.gz"
 
-          ARTIFACT_WORKDIR="/backup-tmp/mlflow-artifacts-$${TS}"
-          ARTIFACT_ARCHIVE="/backup-tmp/mlflow-artifacts-$${TS}.tar.gz"
-          ARTIFACT_DEST="r2:${R2_BUCKET}/mlflow/mlflow-artifacts-$${TS}.tar.gz"
+        echo "[backup] started at $$(date -Iseconds)"
+        echo "[backup] copying RustFS bucket '$${S3_BUCKET}' to local temp"
 
-          DATABASE_WORKDIR="/backup-tmp/database-$${TS}"
-          DATABASE_DUMP="$${DATABASE_WORKDIR}/mlflow-database-$${TS}.sql"
-          DATABASE_ARCHIVE="/backup-tmp/mlflow-database-$${TS}.tar.gz"
-          DATABASE_DEST="r2:${R2_BUCKET}/database/mlflow-database-$${TS}.tar.gz"
+        rm -rf "$${ARTIFACT_WORKDIR}" "$${ARTIFACT_ARCHIVE}"
+        mkdir -p "$${ARTIFACT_WORKDIR}"
 
-          echo "[backup] started at $$(date -Iseconds)"
+        rclone copy "rustfs:$${S3_BUCKET}" "$${ARTIFACT_WORKDIR}" --s3-no-check-bucket --transfers 1 --checkers 1 --retries 3 --low-level-retries 5 --stats 60s --log-level INFO
 
-          echo "[backup] copying RustFS bucket '$${S3_BUCKET}' to local temp"
-          echo "[backup] artifact workdir: $${ARTIFACT_WORKDIR}"
-          echo "[backup] artifact archive: $${ARTIFACT_ARCHIVE}"
-          echo "[backup] artifact destination: $${ARTIFACT_DEST}"
+        echo "[backup] creating artifact archive"
+        tar -czf "$${ARTIFACT_ARCHIVE}" -C "$${ARTIFACT_WORKDIR}" .
 
-          rm -rf "$${ARTIFACT_WORKDIR}" "$${ARTIFACT_ARCHIVE}"
-          mkdir -p "$${ARTIFACT_WORKDIR}"
+        echo "[backup] uploading artifact archive to R2"
+        rclone copyto "$${ARTIFACT_ARCHIVE}" "$${ARTIFACT_DEST}" --s3-no-check-bucket --header-upload "Content-Type: application/gzip" --transfers 1 --retries 3 --low-level-retries 5 --stats 60s --log-level INFO
 
-          rclone copy "rustfs:$${S3_BUCKET}" "$${ARTIFACT_WORKDIR}" \
-            --s3-no-check-bucket \
-            --transfers 1 \
-            --checkers 1 \
-            --retries 3 \
-            --low-level-retries 5 \
-            --stats 60s \
-            --log-level INFO
+        echo "[backup] dumping PostgreSQL database"
 
-          echo "[backup] creating artifact archive"
-          tar -czf "$${ARTIFACT_ARCHIVE}" -C "$${ARTIFACT_WORKDIR}" .
+        rm -rf "$${DATABASE_WORKDIR}" "$${DATABASE_ARCHIVE}"
+        mkdir -p "$${DATABASE_WORKDIR}"
 
-          echo "[backup] uploading artifact archive to R2"
-          rclone copyto "$${ARTIFACT_ARCHIVE}" "$${ARTIFACT_DEST}" \
-            --s3-no-check-bucket \
-            --header-upload "Content-Type: application/gzip" \
-            --transfers 1 \
-            --retries 3 \
-            --low-level-retries 5 \
-            --stats 60s \
-            --log-level INFO
+        pg_dump --host="$${PGHOST}" --port="$${PGPORT}" --username="$${POSTGRES_USER}" --dbname="$${POSTGRES_DB}" --format=plain --no-owner --no-privileges --file="$${DATABASE_DUMP}"
 
-          echo "[backup] dumping PostgreSQL database"
-          echo "[backup] database workdir: $${DATABASE_WORKDIR}"
-          echo "[backup] database dump: $${DATABASE_DUMP}"
-          echo "[backup] database archive: $${DATABASE_ARCHIVE}"
-          echo "[backup] database destination: $${DATABASE_DEST}"
+        echo "[backup] creating database archive"
+        tar -czf "$${DATABASE_ARCHIVE}" -C "$${DATABASE_WORKDIR}" .
 
-          rm -rf "$${DATABASE_WORKDIR}" "$${DATABASE_ARCHIVE}"
-          mkdir -p "$${DATABASE_WORKDIR}"
+        echo "[backup] uploading database archive to R2"
+        rclone copyto "$${DATABASE_ARCHIVE}" "$${DATABASE_DEST}" --s3-no-check-bucket --header-upload "Content-Type: application/gzip" --transfers 1 --retries 3 --low-level-retries 5 --stats 60s --log-level INFO
 
-          pg_dump \
-            --host="$${PGHOST}" \
-            --port="$${PGPORT}" \
-            --username="$${POSTGRES_USER}" \
-            --dbname="$${POSTGRES_DB}" \
-            --format=plain \
-            --no-owner \
-            --no-privileges \
-            --file="$${DATABASE_DUMP}"
+        echo "[backup] cleaning local temp"
+        rm -rf "$${ARTIFACT_WORKDIR}" "$${ARTIFACT_ARCHIVE}" "$${DATABASE_WORKDIR}" "$${DATABASE_ARCHIVE}"
 
-          echo "[backup] creating database archive"
-          tar -czf "$${DATABASE_ARCHIVE}" -C "$${DATABASE_WORKDIR}" .
+        echo "[backup] finished at $$(date -Iseconds)"
+        BACKUP_SCRIPT
 
-          echo "[backup] uploading database archive to R2"
-          rclone copyto "$${DATABASE_ARCHIVE}" "$${DATABASE_DEST}" \
-            --s3-no-check-bucket \
-            --header-upload "Content-Type: application/gzip" \
-            --transfers 1 \
-            --retries 3 \
-            --low-level-retries 5 \
-            --stats 60s \
-            --log-level INFO
+        chmod +x /opt/mlflow-backup/run
 
-          echo "[backup] cleaning local temp"
-          rm -rf \
-            "$${ARTIFACT_WORKDIR}" \
-            "$${ARTIFACT_ARCHIVE}" \
-            "$${DATABASE_WORKDIR}" \
-            "$${DATABASE_ARCHIVE}"
+        echo "0 1 * * * /opt/mlflow-backup/run >> /proc/1/fd/1 2>&1" > /etc/crontabs/root
+        echo "[backup] cron scheduled: 0 1 * * * UTC"
 
-          echo "[backup] finished at $$(date -Iseconds)"
-        done
+        crond -f -l 2
     mem_limit: 256m
     restart: unless-stopped
 
