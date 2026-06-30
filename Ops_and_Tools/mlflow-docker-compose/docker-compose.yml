@@ -153,6 +153,8 @@ services:
       create-bucket:
         condition: service_completed_successfully
     environment:
+      TZ: ${TZ:-Asia/Jakarta}
+
       # Source: PostgreSQL
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -191,9 +193,28 @@ services:
       - |
         set -e
 
-        apk add --no-cache postgresql15-client rclone tar
+        apk add --no-cache postgresql15-client rclone tar tzdata
+
+        wait_until_next_backup() {
+          NOW_EPOCH="$$(date +%s)"
+          TODAY_0100_EPOCH="$$(date -d "$$(date +%Y-%m-%d) 01:00:00" +%s)"
+
+          if [ "$${NOW_EPOCH}" -lt "$${TODAY_0100_EPOCH}" ]; then
+            NEXT_BACKUP_EPOCH="$${TODAY_0100_EPOCH}"
+          else
+            TOMORROW="$$(date -d "$$(date +%Y-%m-%d) +1 day" +%Y-%m-%d)"
+            NEXT_BACKUP_EPOCH="$$(date -d "$${TOMORROW} 01:00:00" +%s)"
+          fi
+
+          SLEEP_SECONDS=$$((NEXT_BACKUP_EPOCH - NOW_EPOCH))
+          echo "[backup] next backup at $$(date -d "@$${NEXT_BACKUP_EPOCH}" -Iseconds)"
+          echo "[backup] sleeping $${SLEEP_SECONDS} seconds"
+          sleep "$${SLEEP_SECONDS}"
+        }
 
         while true; do
+          wait_until_next_backup
+
           TS="$$(date +%Y%m%d-%H%M%S)"
 
           ARTIFACT_WORKDIR="/backup-tmp/mlflow-artifacts-$${TS}"
@@ -277,9 +298,6 @@ services:
             "$${DATABASE_ARCHIVE}"
 
           echo "[backup] finished at $$(date -Iseconds)"
-          echo "[backup] sleeping 24 hours"
-
-          sleep 86400
         done
     mem_limit: 256m
     restart: unless-stopped
