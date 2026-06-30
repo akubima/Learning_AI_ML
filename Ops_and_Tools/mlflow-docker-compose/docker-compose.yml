@@ -41,7 +41,7 @@ services:
     mem_limit: 256m
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", 'curl -s http://127.0.0.1:9000/health | grep -q ''"status":"ok"''']
+      test: ["CMD-SHELL", "curl -s http://127.0.0.1:9000/health | grep -q '"status":"ok"'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -90,23 +90,18 @@ services:
         condition: service_completed_successfully
     environment:
       MLFLOW_BACKEND_STORE_URI: ${MLFLOW_BACKEND_STORE_URI}
-
       MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL}
       MLFLOW_ARTIFACTS_DESTINATION: ${MLFLOW_ARTIFACTS_DESTINATION}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
       MLFLOW_S3_IGNORE_TLS: "true"
-
       MLFLOW_HOST: ${MLFLOW_HOST}
       MLFLOW_PORT: ${MLFLOW_PORT}
-
       MLFLOW_FLASK_SERVER_SECRET_KEY: ${MLFLOW_FLASK_SERVER_SECRET_KEY}
       MLFLOW_AUTH_CONFIG_PATH: /mlflow-auth/basic_auth.ini
-
     volumes:
       - ./basic_auth.ini:/mlflow-auth/basic_auth.ini:ro
-
     command:
       - /bin/bash
       - -c
@@ -121,26 +116,16 @@ services:
           --allowed-hosts "awoawoawok-mlflow-res-ai.bima.dev" \
           --cors-allowed-origins "https://awoawoawok-mlflow-res-ai.bima.dev" \
           --app-name basic-auth
-
     ports:
       - "${MLFLOW_PORT}:${MLFLOW_PORT}"
-
     mem_limit: 900m
     memswap_limit: 3g
-
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:${MLFLOW_PORT}/health')",
-        ]
+      test: ["CMD","python","-c","import urllib.request; urllib.request.urlopen('http://localhost:${MLFLOW_PORT}/health')"]
       interval: 10s
       timeout: 5s
       retries: 30
-
-    restart: "unless-stopped"
+    restart: unless-stopped
 
   backup:
     image: alpine:3.20
@@ -153,155 +138,4 @@ services:
       create-bucket:
         condition: service_completed_successfully
     environment:
-      TZ: ${TZ:-Asia/Jakarta}
-
-      # Source: PostgreSQL
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      PGHOST: postgres
-      PGPORT: 5432
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-
-      # Source: RustFS
-      RCLONE_CONFIG_RUSTFS_TYPE: s3
-      RCLONE_CONFIG_RUSTFS_PROVIDER: Other
-      RCLONE_CONFIG_RUSTFS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      RCLONE_CONFIG_RUSTFS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-      RCLONE_CONFIG_RUSTFS_ENDPOINT: http://storage:9000
-      RCLONE_CONFIG_RUSTFS_REGION: ${AWS_DEFAULT_REGION}
-      RCLONE_CONFIG_RUSTFS_FORCE_PATH_STYLE: "true"
-
-      # Destination: Cloudflare R2
-      RCLONE_CONFIG_R2_TYPE: s3
-      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
-      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
-      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
-      RCLONE_CONFIG_R2_ENDPOINT: ${R2_ENDPOINT}
-      RCLONE_CONFIG_R2_REGION: auto
-      RCLONE_CONFIG_R2_ACL: private
-
-      S3_BUCKET: ${S3_BUCKET}
-      R2_BUCKET: ${R2_BUCKET}
-
-    volumes:
-      - backup-tmp:/backup-tmp
-
-    entrypoint: /bin/sh
-    command:
-      - -c
-      - |
-        set -e
-
-        apk add --no-cache postgresql15-client rclone tar tzdata
-
-        wait_until_next_backup() {
-          NOW_EPOCH="$$(date +%s)"
-          TODAY_0100_EPOCH="$$(date -d "$$(date +%Y-%m-%d) 01:00:00" +%s)"
-
-          if [ "$${NOW_EPOCH}" -lt "$${TODAY_0100_EPOCH}" ]; then
-            NEXT_BACKUP_EPOCH="$${TODAY_0100_EPOCH}"
-          else
-            TOMORROW="$$(date -d "$$(date +%Y-%m-%d) +1 day" +%Y-%m-%d)"
-            NEXT_BACKUP_EPOCH="$$(date -d "$${TOMORROW} 01:00:00" +%s)"
-          fi
-
-          SLEEP_SECONDS=$$((NEXT_BACKUP_EPOCH - NOW_EPOCH))
-          echo "[backup] next backup at $$(date -d "@$${NEXT_BACKUP_EPOCH}" -Iseconds)"
-          echo "[backup] sleeping $${SLEEP_SECONDS} seconds"
-          sleep "$${SLEEP_SECONDS}"
-        }
-
-        while true; do
-          wait_until_next_backup
-
-          TS="$$(date +%Y%m%d-%H%M%S)"
-
-          ARTIFACT_WORKDIR="/backup-tmp/mlflow-artifacts-$${TS}"
-          ARTIFACT_ARCHIVE="/backup-tmp/mlflow-artifacts-$${TS}.tar.gz"
-          ARTIFACT_DEST="r2:${R2_BUCKET}/mlflow/mlflow-artifacts-$${TS}.tar.gz"
-
-          DATABASE_WORKDIR="/backup-tmp/database-$${TS}"
-          DATABASE_DUMP="$${DATABASE_WORKDIR}/mlflow-database-$${TS}.sql"
-          DATABASE_ARCHIVE="/backup-tmp/mlflow-database-$${TS}.tar.gz"
-          DATABASE_DEST="r2:${R2_BUCKET}/database/mlflow-database-$${TS}.tar.gz"
-
-          echo "[backup] started at $$(date -Iseconds)"
-
-          echo "[backup] copying RustFS bucket '$${S3_BUCKET}' to local temp"
-          echo "[backup] artifact workdir: $${ARTIFACT_WORKDIR}"
-          echo "[backup] artifact archive: $${ARTIFACT_ARCHIVE}"
-          echo "[backup] artifact destination: $${ARTIFACT_DEST}"
-
-          rm -rf "$${ARTIFACT_WORKDIR}" "$${ARTIFACT_ARCHIVE}"
-          mkdir -p "$${ARTIFACT_WORKDIR}"
-
-          rclone copy "rustfs:$${S3_BUCKET}" "$${ARTIFACT_WORKDIR}" \
-            --s3-no-check-bucket \
-            --transfers 1 \
-            --checkers 1 \
-            --retries 3 \
-            --low-level-retries 5 \
-            --stats 60s \
-            --log-level INFO
-
-          echo "[backup] creating artifact archive"
-          tar -czf "$${ARTIFACT_ARCHIVE}" -C "$${ARTIFACT_WORKDIR}" .
-
-          echo "[backup] uploading artifact archive to R2"
-          rclone copyto "$${ARTIFACT_ARCHIVE}" "$${ARTIFACT_DEST}" \
-            --s3-no-check-bucket \
-            --header-upload "Content-Type: application/gzip" \
-            --transfers 1 \
-            --retries 3 \
-            --low-level-retries 5 \
-            --stats 60s \
-            --log-level INFO
-
-          echo "[backup] dumping PostgreSQL database"
-          echo "[backup] database workdir: $${DATABASE_WORKDIR}"
-          echo "[backup] database dump: $${DATABASE_DUMP}"
-          echo "[backup] database archive: $${DATABASE_ARCHIVE}"
-          echo "[backup] database destination: $${DATABASE_DEST}"
-
-          rm -rf "$${DATABASE_WORKDIR}" "$${DATABASE_ARCHIVE}"
-          mkdir -p "$${DATABASE_WORKDIR}"
-
-          pg_dump \
-            --host="$${PGHOST}" \
-            --port="$${PGPORT}" \
-            --username="$${POSTGRES_USER}" \
-            --dbname="$${POSTGRES_DB}" \
-            --format=plain \
-            --no-owner \
-            --no-privileges \
-            --file="$${DATABASE_DUMP}"
-
-          echo "[backup] creating database archive"
-          tar -czf "$${DATABASE_ARCHIVE}" -C "$${DATABASE_WORKDIR}" .
-
-          echo "[backup] uploading database archive to R2"
-          rclone copyto "$${DATABASE_ARCHIVE}" "$${DATABASE_DEST}" \
-            --s3-no-check-bucket \
-            --header-upload "Content-Type: application/gzip" \
-            --transfers 1 \
-            --retries 3 \
-            --low-level-retries 5 \
-            --stats 60s \
-            --log-level INFO
-
-          echo "[backup] cleaning local temp"
-          rm -rf \
-            "$${ARTIFACT_WORKDIR}" \
-            "$${ARTIFACT_ARCHIVE}" \
-            "$${DATABASE_WORKDIR}" \
-            "$${DATABASE_ARCHIVE}"
-
-          echo "[backup] finished at $$(date -Iseconds)"
-        done
-    mem_limit: 256m
-    restart: unless-stopped
-
-networks:
-  default:
-    name: mlflow-network
+      TZ: UTC
