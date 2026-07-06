@@ -15,7 +15,6 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
-    mem_limit: 256m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -38,7 +37,6 @@ services:
       - "9001:9001"
     volumes:
       - storage-data:/data
-    mem_limit: 256m
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", 'curl -s http://127.0.0.1:9000/health | grep -q ''"status":"ok"''']
@@ -71,7 +69,6 @@ services:
       AWS_S3_ADDRESSING_STYLE: path
       MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL}
       S3_BUCKET: ${S3_BUCKET}
-    mem_limit: 256m
     restart: "no"
 
   mlflow:
@@ -124,9 +121,6 @@ services:
 
     ports:
       - "${MLFLOW_PORT}:${MLFLOW_PORT}"
-
-    mem_limit: 900m
-    memswap_limit: 3g
 
     healthcheck:
       test:
@@ -251,7 +245,6 @@ services:
         echo "[backup] cron scheduled: 0 1 * * * UTC"
 
         crond -f -l 2
-    mem_limit: 256m
     restart: unless-stopped
 
 networks:
